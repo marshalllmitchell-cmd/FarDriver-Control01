@@ -37,6 +37,8 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.nativeCanvas
+import android.graphics.Paint
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -142,6 +144,7 @@ private fun AppUi(status: String, frames: Int, lastFrame: String, scan: () -> Un
                     }
                 }
             }
+            if (page == "Ride") FaultCluster()
             if (!wide) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 pages.forEach { item -> TextButton(onClick = { page = item }) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(when(item) { "Ride" -> "⌂"; "Tuning" -> "☷"; "Diagnostics" -> "▤"; else -> "⚙" }, fontSize = 22.sp, color = if (page == item) accent else Color(0xFF86A5BE)); Text(item, fontSize = 11.sp, color = if (page == item) accent else Color(0xFFB4C7D7)) } } }
             }
@@ -172,22 +175,20 @@ private fun RideDashboard(connection: String) {
     if (wide) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(Modifier.weight(1.8f)) {
-                GaugePair(Modifier.fillMaxWidth(), 220.dp)
+                GaugePair(Modifier.fillMaxWidth(), 188.dp)
                 ElectricalCluster()
             }
             Column(Modifier.weight(1f)) {
                 DriveCluster()
                 TemperatureCluster()
-                FaultCluster()
             }
         }
     } else {
-        GaugePair(Modifier.fillMaxWidth(), 188.dp)
-        Spacer(Modifier.height(8.dp))
+        GaugePair(Modifier.fillMaxWidth(), 166.dp)
+        Spacer(Modifier.height(4.dp))
         ElectricalCluster()
         DriveCluster()
         TemperatureCluster()
-        FaultCluster()
     }
     Spacer(Modifier.height(6.dp))
     Text(if (connected) "Connected • Awaiting verified telemetry decoding" else "Disconnected • Readings unavailable", color = amber, fontSize = 10.sp)
@@ -215,6 +216,19 @@ private fun GaugeCard(label: String, unit: String, secondary: String, ring: Colo
                 drawArc(ring.copy(alpha = .78f), 140f, if (tach) 200f else 260f, false, topLeft, androidx.compose.ui.geometry.Size(diameter, diameter), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
                 if (tach) drawArc(Color(0xFFF05A5A), 340f, 60f, false, topLeft, androidx.compose.ui.geometry.Size(diameter, diameter), style = Stroke(5.dp.toPx(), cap = StrokeCap.Round))
                 val cx = size.width / 2f; val cy = size.height / 2f
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = android.graphics.Color.rgb(190, 216, 235)
+                    textSize = 9.sp.toPx()
+                    textAlign = Paint.Align.CENTER
+                }
+                for (i in 0..6) {
+                    val angle = Math.toRadians((140.0 + i * 260.0 / 6.0))
+                    val radius = diameter * .31f
+                    val number = if (tach) (i * 2).toString() else (i * 20).toString()
+                    drawContext.canvas.nativeCanvas.drawText(number,
+                        cx + (radius * cos(angle)).toFloat(),
+                        cy + (radius * sin(angle)).toFloat() + 3.sp.toPx(), paint)
+                }
                 for (i in 0..12) {
                     val angle = Math.toRadians((140.0 + i * 260.0 / 12.0))
                     val inner = diameter * .38f
@@ -250,7 +264,8 @@ private fun ElectricTile(icon: String, label: String, unit: String, modifier: Mo
     Column(modifier.padding(top = 6.dp).background(Color(0xFF0D263D), RoundedCornerShape(10.dp))
         .border(1.dp, Color(0xFF185278), RoundedCornerShape(10.dp)).padding(9.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(icon, color = electricBlue, fontSize = 16.sp)
+            MetricIcon(label)
+
             Spacer(Modifier.width(4.dp))
             Text(label, color = Color(0xFFB9D4E9), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -285,7 +300,11 @@ private fun SmallStatus(label: String, value: String, modifier: Modifier) {
             Text(label, color = Color(0xFF9DC4E1), fontSize = 9.sp)
         }
         Spacer(Modifier.height(5.dp))
-        Text(value, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(value, color = if (label == "MODE" || label == "DIRECTION") amber else Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (label == "THROTTLE") {
+            Spacer(Modifier.height(5.dp))
+            Box(Modifier.fillMaxWidth().height(4.dp).background(Color(0xFF365269), RoundedCornerShape(3.dp)))
+        }
     }
 }
 
@@ -314,9 +333,9 @@ private fun TempMetric(icon: String, label: String, modifier: Modifier) {
 
 @Composable
 private fun FaultCluster() {
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(3.dp))
     Row(Modifier.fillMaxWidth().background(Color(0xFF2A241B), RoundedCornerShape(12.dp))
-        .border(1.dp, amber, RoundedCornerShape(12.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        .border(1.dp, amber, RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("⚠", color = amber, fontSize = 26.sp)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
@@ -341,5 +360,35 @@ private fun MotorcycleThrottleIcon() {
             drawLine(Color(0xFF07314E), Offset(x * scale, 6f * scale), Offset((x - 2f) * scale, 14f * scale), 1.2f * scale)
         }
         drawLine(Color(0xFF83D9FF), Offset(7f * scale, 3f * scale), Offset(10f * scale, 5f * scale), 1.5f * scale, cap = StrokeCap.Round)
+    }
+}
+
+
+/** Small consistent vector icons drawn locally, no third-party icon assets. */
+@Composable
+private fun MetricIcon(label: String) {
+    Canvas(Modifier.size(18.dp)) {
+        val c = electricBlue
+        val w = size.width; val h = size.height
+        when (label) {
+            "Battery" -> {
+                drawRoundRect(c, Offset(w*.08f,h*.25f), Size(w*.76f,h*.55f), CornerRadius(2.dp.toPx()), style = Stroke(1.8.dp.toPx()))
+                drawRect(c, Offset(w*.85f,h*.42f), Size(w*.1f,h*.19f))
+                drawLine(c, Offset(w*.2f,h*.53f), Offset(w*.48f,h*.53f), 1.4.dp.toPx())
+            }
+            "Battery Current" -> {
+                drawRoundRect(c, Offset(w*.07f,h*.25f), Size(w*.75f,h*.55f), CornerRadius(2.dp.toPx()), style = Stroke(1.6.dp.toPx()))
+                drawLine(Color(0xFFFFCB6D), Offset(w*.51f,h*.27f), Offset(w*.37f,h*.54f), 2.dp.toPx())
+                drawLine(Color(0xFFFFCB6D), Offset(w*.37f,h*.54f), Offset(w*.58f,h*.54f), 2.dp.toPx())
+                drawLine(Color(0xFFFFCB6D), Offset(w*.58f,h*.54f), Offset(w*.44f,h*.78f), 2.dp.toPx())
+            }
+            "Power" -> {
+                for (i in 0..2) drawRoundRect(c, Offset(w*(.13f + i*.27f), h*(.65f-i*.2f)), Size(w*.16f,h*(.25f+i*.2f)), CornerRadius(1.dp.toPx()))
+            }
+            else -> {
+                val points = listOf(0.05f to .55f,.25f to .55f,.35f to .25f,.5f to .8f,.65f to .4f,.8f to .55f,.95f to .55f)
+                points.zipWithNext().forEach { (a,b) -> drawLine(c, Offset(w*a.first,h*a.second), Offset(w*b.first,h*b.second), 1.8.dp.toPx(), cap = StrokeCap.Round) }
+            }
+        }
     }
 }
