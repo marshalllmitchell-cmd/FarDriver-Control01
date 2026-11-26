@@ -1,74 +1,210 @@
 package com.fardriver.control
 
 import android.annotation.SuppressLint
-import android.bluetooth.*
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import java.util.UUID
 
-/** Read-only transport scaffold. Never writes tuning parameters or firmware. */
+/**
+ * FarDriver Control BLE transport prototype.
+ * Read-only: no tuning commands, firmware updates, or controller parameter writes.
+ * The caller must request Bluetooth permissions before calling scan().
+ * Service and characteristic IDs require validation against the actual ND72530 module.
+ */
 @SuppressLint("MissingPermission")
-class BleManager(private val context: Context, private val onStatus: (String)->Unit, private val onFrame: (ByteArray)->Unit) {
+class BleManager(
+    private val context: Context,
+    private val onStatus: (String) -> Unit,
+    private val onFrame: (ByteArray) -> Unit
+) {
     private val manager = context.getSystemService(BluetoothManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
-    private var gatt: BluetoothGatt? = null
+    private val serviceUuid = UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb")
+    private val characteristicUuid = UUID.fromString("0000ffec-0000-1000-8000-00805f9b34fb")
+    private val cccdUuid = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
     private var scanning = false
-    private val serviceId = UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb")
-    private val characteristicId = UUID.fromString("0000ffec-0000-1000-8000-00805f9b34fb")
-    private val cccd = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-    private val scanCallback = object: ScanCallback() {
+    private var connecting = false
+    private var gatt: BluetoothGatt? = null
+    private var closed = false
+    private val scanTimeout = Runnable {
+        if (scanning) {
+            stopScan()
+            report("Scan timed out")
+        }
+    }
+
+    private fun report(message: String) {
+        handler.post { if (!closed) onStatus(message) }
+    }
+
+    private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            if (!scanning) return
-            val name = result.device.name ?: result.scanRecord?.deviceName ?: "Unnamed BLE device"
-            if (name.contains("Far", true) || name.contains("BLE", true) || name.contains("JDY", true)) {
-                stopScan(); onStatus("Connecting to $name")
-                gatt = result.device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+            if (!scanning || connecting || closed) return
+            val name = try {
+                result.scanRecord?.deviceName ?: result.device.name ?: ""
+            } catch (_: SecurityException) {
+                result.scanRecord?.deviceName ?: ""
+            }
+            // Discovery heuristic only; some FarDriver modules may advertise different names.
+            if (name.contains("Far", ignoreCase = true) ||
+                name.contains("BLE", ignoreCase = true) ||
+                name.contains("JDY", ignoreCase = true)) {
+                stopScan()
+                connecting = true
+                report("Connecting to $name")
+                try {
+                    gatt = result.device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+                    if (gatt == null) {
+                        connecting = false
+                        report("Unable to start GATT connection")
+                    }
+                } catch (e: Exception) {
+                    connecting = false
+                    report("Connection error: ${e.message ?: e.javaClass.simpleName}")
+                }
             }
         }
-        override fun onScanFailed(errorCode: Int) { scanning = false; onStatus("Scan failed: $errorCode") }
+
+        override fun onScanFailed(errorCode: Int) {
+            scanning = false
+            handler.removeCallbacks(scanTimeout)
+            report("BLE scan failed ($errorCode)")
+        }
     }
-    private val callback = object: BluetoothGattCallback() {
+
+    private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) { onStatus("Connection error: $status"); g.close(); return }
-            if (newState == BluetoothProfile.STATE_CONNECTED) { onStatus("Discovering services"); g.discoverServices() }
-            else if (newState == BluetoothProfile.STATE_DISCONNECTED) { onStatus("Disconnected"); g.close() }
-        }
-        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            val characteristic = g.getService(serviceId)?.getCharacteristic(characteristicId)
-            if (status != BluetoothGatt.GATT_SUCCESS || characteristic == null) { onStatus("Expected BLE service/characteristic not found"); return }
-            val enabled = g.setCharacteristicNotification(characteristic, true)
-            val descriptor = characteristic.getDescriptor(cccd)
-            if (enabled && descriptor != null) {
-                if (android.os.Build.VERSION.SDK_INT >= 33) g.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                else {
-                    @Suppress("DEPRECATION")
-                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    @Suppress("DEPRECATION")
-                    g.writeDescriptor(descriptor)
+            if (closed) { g.close(); return }
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                connecting = false
+                report("GATT connection error ($status)")
+                g.close()
+                if (gatt === g) gatt = null
+                return
+            }
+            when (newState) {
+                BluetoothProfile.STATE_CONNECTED -> {
+                    connecting = false
+                    report("Connected; discovering services")
+                    try { g.discoverServices() } catch (e: Exception) {
+                        report("Service discovery failed: ${e.message}")
+                    }
                 }
-                onStatus("Connected: notification setup requested")
-            } else onStatus("Connected; notification setup unavailable")
+                BluetoothProfile.STATE_DISCONNECTED -> {
+                    connecting = false
+                    report("Disconnected")
+                    g.close()
+                    if (gatt === g) gatt = null
+                }
+            }
         }
-        @Deprecated("Android 13 callback compatibility")
-        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
+
+        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                report("Service discovery error ($status)")
+                return
+            }
+            val characteristic = g.getService(serviceUuid)?.getCharacteristic(characteristicUuid)
+            if (characteristic == null) {
+                report("Expected FFE0/FFEC characteristic not found")
+                return
+            }
+            val supportsNotify = characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
+            if (!supportsNotify) {
+                report("FFEC does not advertise notifications")
+                return
+            }
+            if (!g.setCharacteristicNotification(characteristic, true)) {
+                report("Failed to enable local notifications")
+                return
+            }
+            val descriptor = characteristic.getDescriptor(cccdUuid)
+            if (descriptor == null) {
+                report("Notification descriptor missing")
+                return
+            }
+            val started = if (Build.VERSION.SDK_INT >= 33) {
+                g.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothGatt.GATT_SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                @Suppress("DEPRECATION")
+                g.writeDescriptor(descriptor)
+            }
+            report(if (started) "Connected; enabling notifications" else "Failed to request notifications")
+        }
+
+        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (descriptor.uuid == cccdUuid) {
+                report(if (status == BluetoothGatt.GATT_SUCCESS) "Connected; notifications enabled" else "Notification setup error ($status)")
+            }
+        }
+
+        @Deprecated("Compatibility with Android versions before 13")
+        override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             @Suppress("DEPRECATION")
-            val data = c.value?.clone() ?: byteArrayOf()
-            onFrame(data)
+            val data = characteristic.value?.clone() ?: byteArrayOf()
+            if (characteristic.uuid == characteristicUuid && !closed) onFrame(data)
         }
-        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) { onFrame(value.clone()) }
+
+        override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            if (characteristic.uuid == characteristicUuid && !closed) onFrame(value.clone())
+        }
     }
+
     fun scan() {
-        if (scanning) return
+        if (closed || scanning || connecting) return
         val adapter = manager.adapter
-        if (adapter == null || !adapter.isEnabled) { onStatus("Enable Bluetooth first"); return }
-        onStatus("Scanning for compatible BLE devices")
-        scanning = true
-        adapter.bluetoothLeScanner?.startScan(scanCallback)
-        handler.postDelayed({ if (scanning) { stopScan(); onStatus("Scan timed out") } }, 12000)
+        if (adapter == null || !adapter.isEnabled) {
+            report("Enable Bluetooth first")
+            return
+        }
+        if (gatt != null) {
+            report("Already connected or connection pending; restart app to rescan")
+            return
+        }
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null) {
+            report("BLE scanner unavailable")
+            return
+        }
+        try {
+            scanning = true
+            scanner.startScan(scanCallback)
+            report("Scanning for FarDriver BLE modules")
+            handler.postDelayed(scanTimeout, 12000L)
+        } catch (e: Exception) {
+            scanning = false
+            report("Scan error: ${e.message ?: e.javaClass.simpleName}")
+        }
     }
-    private fun stopScan() { if (scanning) { scanning = false; manager.adapter?.bluetoothLeScanner?.stopScan(scanCallback) } }
-    fun close() { stopScan(); gatt?.disconnect(); gatt?.close(); gatt = null }
+
+    private fun stopScan() {
+        handler.removeCallbacks(scanTimeout)
+        if (!scanning) return
+        scanning = false
+        try { manager.adapter?.bluetoothLeScanner?.stopScan(scanCallback) } catch (_: Exception) { }
+    }
+
+    fun close() {
+        if (closed) return
+        stopScan()
+        closed = true
+        connecting = false
+        try { gatt?.disconnect() } catch (_: Exception) { }
+        try { gatt?.close() } catch (_: Exception) { }
+        gatt = null
+    }
 }
