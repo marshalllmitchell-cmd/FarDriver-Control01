@@ -38,10 +38,9 @@ class MainActivity: ComponentActivity() {
             val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
                 if (grants.values.all { it }) ble?.scan() else status = "Bluetooth permissions denied"
             }
-            LaunchedEffect(Unit) {
-                ble = BleManager(this@MainActivity, { runOnUiThread { status = it } }, { frame ->
-                    runOnUiThread { received++; lastFrame = frame.joinToString(" ") { "%02X".format(it) } }
-                })
+           LaunchedEffect(Unit) {
+    status = "Bluetooth temporarily disabled for testing"
+}
             }
             FarDriverUi(status, received, lastFrame, onScan = {
                 val required = if (Build.VERSION.SDK_INT >= 31) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
