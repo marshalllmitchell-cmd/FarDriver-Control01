@@ -23,6 +23,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalConfiguration
@@ -233,9 +235,9 @@ private fun GaugeCard(label: String, unit: String, secondary: String, ring: Colo
 private fun ElectricalCluster() {
     Text("ELECTRICAL", color = electricBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        ElectricTile("▣", "Battery", "V", Modifier.weight(1f))
-        ElectricTile("ϟ", "Battery Current", "A", Modifier.weight(1f))
-        ElectricTile("▥", "Power", "kW", Modifier.weight(1f))
+        ElectricTile("▰", "Battery", "V", Modifier.weight(1f))
+        ElectricTile("⚡", "Battery Current", "A", Modifier.weight(1f))
+        ElectricTile("◧", "Power", "kW", Modifier.weight(1f))
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         ElectricTile("∿", "Phase A", "A", Modifier.weight(1f))
@@ -275,7 +277,13 @@ private fun DriveCluster() {
 @Composable
 private fun SmallStatus(label: String, value: String, modifier: Modifier) {
     Column(modifier.background(Color(0xFF12334D), RoundedCornerShape(8.dp)).padding(7.dp)) {
-        Text(label, color = Color(0xFF9DC4E1), fontSize = 9.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (label == "THROTTLE") {
+                MotorcycleThrottleIcon()
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(label, color = Color(0xFF9DC4E1), fontSize = 9.sp)
+        }
         Spacer(Modifier.height(5.dp))
         Text(value, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
@@ -289,8 +297,8 @@ private fun TemperatureCluster() {
         Text("TEMPERATURE", color = electricBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(7.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            TempMetric("▣", "Controller", Modifier.weight(1f))
-            TempMetric("◉", "Motor", Modifier.weight(1f))
+            TempMetric("▦", "Controller", Modifier.weight(1f))
+            TempMetric("⚙", "Motor", Modifier.weight(1f))
         }
     }
 }
@@ -316,5 +324,22 @@ private fun FaultCluster() {
             Text("Fault decoder not yet validated", color = Color.White, fontSize = 10.sp)
         }
         Text("›", color = amber, fontSize = 24.sp)
+    }
+}
+
+
+/** Stylized twist-grip throttle and handlebar, not an accelerator pedal. */
+@Composable
+private fun MotorcycleThrottleIcon() {
+    Canvas(Modifier.size(width = 29.dp, height = 19.dp)) {
+        val scale = size.width / 29f
+        // Handlebar shaft and throttle housing.
+        drawLine(Color(0xFFB9D4E9), Offset(2f * scale, 10f * scale), Offset(26f * scale, 10f * scale), 3f * scale, cap = StrokeCap.Round)
+        drawRoundRect(Color(0xFF38A9FA), topLeft = Offset(10f * scale, 5f * scale), size = Size(15f * scale, 10f * scale), cornerRadius = CornerRadius(4f * scale))
+        // Grip ribs make this visually distinct from a pedal.
+        for (x in listOf(14f, 18f, 22f)) {
+            drawLine(Color(0xFF07314E), Offset(x * scale, 6f * scale), Offset((x - 2f) * scale, 14f * scale), 1.2f * scale)
+        }
+        drawLine(Color(0xFF83D9FF), Offset(7f * scale, 3f * scale), Offset(10f * scale, 5f * scale), 1.5f * scale, cap = StrokeCap.Round)
     }
 }
