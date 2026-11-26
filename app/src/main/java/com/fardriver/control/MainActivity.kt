@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,11 +21,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import kotlin.math.cos
+import kotlin.math.sin
 
 private val navy = Color(0xFF081522)
 private val panel = Color(0xFF14283D)
@@ -82,10 +94,10 @@ private fun AppUi(status: String, frames: Int, lastFrame: String, scan: () -> Un
     MaterialTheme(colorScheme = darkColorScheme(primary = accent, background = navy, surface = panel)) {
         Column(Modifier.fillMaxSize().background(navy).padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (wide) TextButton(onClick = { menu = !menu }) { Text("Menu") }
-                Text("FARDRIVER CONTROL", color = Color.White, fontSize = 19.sp)
+                if (wide) TextButton(onClick = { menu = !menu }) { Text("☰", fontSize = 23.sp) }
+                Text(buildAnnotatedString { withStyle(SpanStyle(color = accent, fontWeight = FontWeight.Bold)) { append("FARDRIVER") }; withStyle(SpanStyle(color = Color.White)) { append(" CONTROL") } }, fontSize = 18.sp)
                 Spacer(Modifier.weight(1f))
-                Text(status.take(30), color = accent, fontSize = 11.sp)
+                Text(if (status.startsWith("Connected", true)) "● Connected" else "● Disconnected", color = if (status.startsWith("Connected", true)) Color(0xFF4CE2AA) else Color(0xFFFFC66E), fontSize = 11.sp)
             }
             Row(Modifier.weight(1f)) {
                 if (wide && menu) Column(Modifier.width(150.dp)) {
@@ -93,7 +105,7 @@ private fun AppUi(status: String, frames: Int, lastFrame: String, scan: () -> Un
                 }
                 LazyColumn(Modifier.weight(1f)) {
                     item {
-                        Text(page.uppercase(), color = Color.White, fontSize = 22.sp)
+                        if (page != "Ride") Text(page.uppercase(), color = Color.White, fontSize = 22.sp)
                         when (page) {
                             "Ride" -> RideDashboard(status)
                             "Tuning" -> {
@@ -129,7 +141,7 @@ private fun AppUi(status: String, frames: Int, lastFrame: String, scan: () -> Un
                 }
             }
             if (!wide) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                pages.forEach { item -> TextButton(onClick = { page = item }) { Text(item, fontSize = 12.sp) } }
+                pages.forEach { item -> TextButton(onClick = { page = item }) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(when(item) { "Ride" -> "⌂"; "Tuning" -> "☷"; "Diagnostics" -> "▤"; else -> "⚙" }, fontSize = 22.sp, color = if (page == item) accent else Color(0xFF86A5BE)); Text(item, fontSize = 11.sp, color = if (page == item) accent else Color(0xFFB4C7D7)) } } }
             }
         }
     }
@@ -145,80 +157,164 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 }
 
 
-/** Read-only dashboard: placeholders until telemetry and fault decoders are verified. */
+private val electricBlue = Color(0xFF20AFFF)
+private val dimBlue = Color(0xFF557994)
+private val amber = Color(0xFFFFB84E)
+
 @Composable
 private fun RideDashboard(connection: String) {
-    val connected = connection.startsWith("Connected", ignoreCase = true)
-    Text("LIVE RIDE MONITOR", color = Color(0xFF9CB5CD), fontSize = 12.sp)
+    val wide = LocalConfiguration.current.screenWidthDp >= 650
+    val connected = connection.startsWith("Connected", true)
+    Text("RIDE  •  LIVE MONITOR", color = Color(0xFF9CBBD3), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     Spacer(Modifier.height(8.dp))
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Column(Modifier.weight(1f).background(panel, RoundedCornerShape(14.dp)).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("SPEED", color = accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(14.dp))
-            Text("—", color = Color.White, fontSize = 58.sp, fontWeight = FontWeight.Bold)
-            Text("MPH", color = Color.White, fontSize = 20.sp)
-            Text("— km/h", color = Color(0xFF9CB5CD), fontSize = 12.sp)
-            Spacer(Modifier.height(12.dp))
+    if (wide) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.weight(1.8f)) {
+                GaugePair(Modifier.fillMaxWidth(), 220.dp)
+                ElectricalCluster()
+            }
+            Column(Modifier.weight(1f)) {
+                DriveCluster()
+                TemperatureCluster()
+                FaultCluster()
+            }
         }
-        Column(Modifier.weight(1f).background(panel, RoundedCornerShape(14.dp)).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("MOTOR RPM", color = accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            Box(Modifier.fillMaxWidth().height(158.dp), contentAlignment = Alignment.Center) {
-                Canvas(Modifier.size(140.dp)) {
-                    val stroke = 11.dp.toPx()
-                    drawArc(color = Color(0xFF263C52), startAngle = 135f, sweepAngle = 270f, useCenter = false, style = Stroke(stroke))
-                    // Unlit arc is intentional: no controller RPM has been decoded.
+    } else {
+        GaugePair(Modifier.fillMaxWidth(), 188.dp)
+        Spacer(Modifier.height(8.dp))
+        ElectricalCluster()
+        DriveCluster()
+        TemperatureCluster()
+        FaultCluster()
+    }
+    Spacer(Modifier.height(6.dp))
+    Text(if (connected) "Connected • Awaiting verified telemetry decoding" else "Disconnected • Readings unavailable", color = amber, fontSize = 10.sp)
+}
+
+@Composable
+private fun GaugePair(modifier: Modifier = Modifier, height: androidx.compose.ui.unit.Dp) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        GaugeCard("SPEED", "MPH", "— km/h", electricBlue, false, Modifier.weight(1f).height(height))
+        GaugeCard("MOTOR RPM", "RPM", "×1000", Color(0xFF80A9CA), true, Modifier.weight(1f).height(height))
+    }
+}
+
+@Composable
+private fun GaugeCard(label: String, unit: String, secondary: String, ring: Color, tach: Boolean, modifier: Modifier) {
+    Column(modifier.background(Brush.verticalGradient(listOf(Color(0xFF142C43), Color(0xFF071A2B))), RoundedCornerShape(15.dp))
+        .border(1.dp, Color(0xFF224D6A), RoundedCornerShape(15.dp)).padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, color = electricBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.fillMaxSize().padding(4.dp)) {
+                val diameter = size.minDimension
+                val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
+                val width = 8.dp.toPx()
+                drawArc(Color(0xFF243F56), 140f, 260f, false, topLeft, androidx.compose.ui.geometry.Size(diameter, diameter), style = Stroke(width, cap = StrokeCap.Round))
+                drawArc(ring.copy(alpha = .78f), 140f, if (tach) 200f else 260f, false, topLeft, androidx.compose.ui.geometry.Size(diameter, diameter), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
+                if (tach) drawArc(Color(0xFFF05A5A), 340f, 60f, false, topLeft, androidx.compose.ui.geometry.Size(diameter, diameter), style = Stroke(5.dp.toPx(), cap = StrokeCap.Round))
+                val cx = size.width / 2f; val cy = size.height / 2f
+                for (i in 0..12) {
+                    val angle = Math.toRadians((140.0 + i * 260.0 / 12.0))
+                    val inner = diameter * .38f
+                    val outer = diameter * .43f
+                    drawLine(Color(0xFFB2D6EF), Offset(cx + (inner * cos(angle)).toFloat(), cy + (inner * sin(angle)).toFloat()), Offset(cx + (outer * cos(angle)).toFloat(), cy + (outer * sin(angle)).toFloat()), 1.2.dp.toPx())
                 }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("—", color = Color.White, fontSize = 42.sp, fontWeight = FontWeight.Bold)
-                    Text("RPM", color = Color(0xFF9CB5CD), fontSize = 12.sp)
-                }
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("—", color = Color.White, fontSize = 47.sp, fontWeight = FontWeight.Bold, lineHeight = 50.sp)
+                Text(unit, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text(secondary, color = Color(0xFF9CBBD3), fontSize = 10.sp)
             }
         }
     }
-    Spacer(Modifier.height(10.dp))
-    Text("ELECTRICAL", color = accent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        RideMetric("BATTERY", "—", "V", Modifier.weight(1f))
-        RideMetric("BATTERY DRAW", "—", "A", Modifier.weight(1f))
-        RideMetric("POWER", "—", "kW", Modifier.weight(1f))
+}
+
+@Composable
+private fun ElectricalCluster() {
+    Text("ELECTRICAL", color = electricBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        ElectricTile("▣", "Battery", "V", Modifier.weight(1f))
+        ElectricTile("ϟ", "Battery Current", "A", Modifier.weight(1f))
+        ElectricTile("▥", "Power", "kW", Modifier.weight(1f))
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        RideMetric("PHASE A", "—", "A", Modifier.weight(1f))
-        RideMetric("PHASE C", "—", "A", Modifier.weight(1f))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        ElectricTile("∿", "Phase A", "A", Modifier.weight(1f))
+        ElectricTile("∿", "Phase C", "A", Modifier.weight(1f))
     }
-    Section("DRIVE STATUS") {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Throttle: unavailable", color = Color.White, fontSize = 13.sp)
-            Text("Mode: unknown", color = Color.White, fontSize = 13.sp)
+}
+
+@Composable
+private fun ElectricTile(icon: String, label: String, unit: String, modifier: Modifier) {
+    Column(modifier.padding(top = 6.dp).background(Color(0xFF0D263D), RoundedCornerShape(10.dp))
+        .border(1.dp, Color(0xFF185278), RoundedCornerShape(10.dp)).padding(9.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(icon, color = electricBlue, fontSize = 16.sp)
+            Spacer(Modifier.width(4.dp))
+            Text(label, color = Color(0xFFB9D4E9), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text("Direction: unknown", color = Color(0xFFB9CBDB), fontSize = 12.sp)
+        Spacer(Modifier.height(8.dp))
+        Text("— $unit", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        TemperatureTile("CONTROLLER", Modifier.weight(1f))
-        TemperatureTile("MOTOR", Modifier.weight(1f))
-    }
-    Spacer(Modifier.height(8.dp))
-    Column(Modifier.fillMaxWidth().border(1.dp, Color(0xFFE3A74C), RoundedCornerShape(12.dp)).padding(12.dp)) {
-        Text("FAULT STATUS: NOT AVAILABLE", color = Color(0xFFFFCF80), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Text("No validated fault data. Do not assume the controller is fault-free.", color = Color.White, fontSize = 12.sp)
-    }
-    Spacer(Modifier.height(8.dp))
-    Text(if (connected) "BLE connected. Telemetry decoding pending validation." else "DISCONNECTED • Live measurements unavailable", color = Color(0xFFFFCF80), fontSize = 12.sp)
 }
 
 @Composable
-private fun RideMetric(label: String, value: String, unit: String, modifier: Modifier = Modifier) {
-    Column(modifier.padding(top = 8.dp).background(panel, RoundedCornerShape(10.dp)).padding(10.dp)) {
-        Text(label, color = Color(0xFF9EC7E8), fontSize = 10.sp, maxLines = 2)
+private fun DriveCluster() {
+    Spacer(Modifier.height(8.dp))
+    Column(Modifier.fillMaxWidth().background(Color(0xFF0D263D), RoundedCornerShape(12.dp))
+        .border(1.dp, Color(0xFF185278), RoundedCornerShape(12.dp)).padding(10.dp)) {
+        Text("DRIVE STATUS", color = electricBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SmallStatus("THROTTLE", "— %", Modifier.weight(1f))
+            SmallStatus("MODE", "Unknown", Modifier.weight(1f))
+            SmallStatus("DIRECTION", "Unknown", Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun SmallStatus(label: String, value: String, modifier: Modifier) {
+    Column(modifier.background(Color(0xFF12334D), RoundedCornerShape(8.dp)).padding(7.dp)) {
+        Text(label, color = Color(0xFF9DC4E1), fontSize = 9.sp)
+        Spacer(Modifier.height(5.dp))
+        Text(value, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun TemperatureCluster() {
+    Spacer(Modifier.height(8.dp))
+    Column(Modifier.fillMaxWidth().background(Color(0xFF0D263D), RoundedCornerShape(12.dp))
+        .border(1.dp, Color(0xFF185278), RoundedCornerShape(12.dp)).padding(10.dp)) {
+        Text("TEMPERATURE", color = electricBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(7.dp))
-        Text("$value $unit", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            TempMetric("▣", "Controller", Modifier.weight(1f))
+            TempMetric("◉", "Motor", Modifier.weight(1f))
+        }
     }
 }
 
 @Composable
-private fun TemperatureTile(label: String, modifier: Modifier = Modifier) {
-    Column(modifier.background(panel, RoundedCornerShape(10.dp)).padding(12.dp)) {
-        Text("$label TEMP", color = accent, fontSize = 11.sp)
-        Text("— °F (— °C)", color = Color.White, fontSize = 16.sp)
+private fun TempMetric(icon: String, label: String, modifier: Modifier) {
+    Column(modifier.background(Color(0xFF12334D), RoundedCornerShape(8.dp)).padding(7.dp)) {
+        Text("$icon  $label", color = Color(0xFFAACDE5), fontSize = 10.sp)
+        Spacer(Modifier.height(5.dp))
+        Text("— °F (— °C)", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun FaultCluster() {
+    Spacer(Modifier.height(8.dp))
+    Row(Modifier.fillMaxWidth().background(Color(0xFF2A241B), RoundedCornerShape(12.dp))
+        .border(1.dp, amber, RoundedCornerShape(12.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("⚠", color = amber, fontSize = 26.sp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Fault status unavailable", color = amber, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text("Fault decoder not yet validated", color = Color.White, fontSize = 10.sp)
+        }
+        Text("›", color = amber, fontSize = 24.sp)
     }
 }
