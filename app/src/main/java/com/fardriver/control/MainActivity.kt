@@ -14,6 +14,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -112,16 +114,7 @@ private fun AppUi(status: String, frames: Int, lastFrame: String, scan: () -> Un
                         if (page != "Ride") Text(page.uppercase(), color = Color.White, fontSize = 22.sp)
                         when (page) {
                             "Ride" -> RideDashboard(status)
-                            "Tuning" -> {
-                                Text("Offline UI demonstration. Sliders are NOT controller settings.", color = Color(0xFFFFD17A))
-                                listOf("Battery current", "Phase current", "Speed mode 1", "Speed mode 2", "Speed mode 3", "Regeneration").forEach { label ->
-                                    var value by remember(label) { mutableFloatStateOf(50f) }
-                                    Section(label) {
-                                        Slider(value = value, onValueChange = { value = it })
-                                        Text("Illustrative position: ${value.toInt()} / 100")
-                                    }
-                                }
-                            }
+                            "Tuning" -> TuningScreenV05()
                             "Diagnostics" -> {
                                 Section("Bluetooth") {
                                     Button(onClick = scan) { Text("Scan & Connect") }
@@ -389,6 +382,127 @@ private fun MetricIcon(label: String) {
                 val points = listOf(0.05f to .55f,.25f to .55f,.35f to .25f,.5f to .8f,.65f to .4f,.8f to .55f,.95f to .55f)
                 points.zipWithNext().forEach { (a,b) -> drawLine(c, Offset(w*a.first,h*a.second), Offset(w*b.first,h*b.second), 1.8.dp.toPx(), cap = StrokeCap.Round) }
             }
+        }
+    }
+}
+
+
+// Tuning v0.5: visual-only offline demonstration. Numeric values and ranges are
+// NOT controller limits, and no BLE parameter reads or writes are implemented.
+private data class DemoParameter(val key: String, val title: String, val unit: String, val min: Int, val max: Int, val initial: Int, val step: Int = 1)
+private data class DemoGroup(val title: String, val parameters: List<DemoParameter>)
+private val demoGroups = listOf(
+    DemoGroup("Battery & Current", listOf(
+        DemoParameter("battery", "Battery current limit", "A", 0, 300, 120, 5),
+        DemoParameter("phase", "Phase current limit", "A", 0, 800, 350, 5),
+        DemoParameter("voltage", "Rated battery voltage", "V", 0, 120, 72, 1))),
+    DemoGroup("Speed Modes", listOf(
+        DemoParameter("speed1", "Speed mode 1", "%", 0, 100, 30),
+        DemoParameter("speed2", "Speed mode 2", "%", 0, 100, 60),
+        DemoParameter("speed3", "Speed mode 3", "%", 0, 100, 100))),
+    DemoGroup("Throttle Configuration", listOf(
+        DemoParameter("throttle", "Throttle response", "%", 0, 100, 50))),
+    DemoGroup("Regenerative Braking", listOf(
+        DemoParameter("regen", "Regeneration strength", "%", 0, 100, 30))),
+    DemoGroup("Motor Configuration", listOf(
+        DemoParameter("poles", "Motor pole pairs", "", 1, 50, 23))),
+    DemoGroup("Protection Settings", listOf(
+        DemoParameter("lowvolt", "Low voltage cutoff", "V", 0, 120, 56))),
+    DemoGroup("Advanced Parameters", listOf(
+        DemoParameter("weakening", "Field weakening", "%", 0, 100, 0)))
+)
+
+@Composable
+private fun TuningScreenV05() {
+    val all = remember { demoGroups.flatMap { it.parameters } }
+    val staged = remember { mutableStateMapOf<String, Int>().apply { all.forEach { put(it.key, it.initial) } } }
+    val baseline = remember { all.associate { it.key to it.initial } }
+    val expanded = remember { mutableStateMapOf<String, Boolean>().apply { demoGroups.forEachIndexed { index, g -> put(g.title, index == 0) } } }
+    var savedProfile by remember { mutableStateOf<Map<String, Int>?>(null) }
+    var showInfo by remember { mutableStateOf(false) }
+    val changed = all.count { staged[it.key] != baseline[it.key] }
+
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("PARAMETER EDITOR", color = electricBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.weight(1f))
+        Text("$changed STAGED", color = if (changed > 0) amber else Color(0xFFB4C7D7), fontSize = 11.sp)
+    }
+    Spacer(Modifier.height(6.dp))
+    Column(Modifier.fillMaxWidth().background(Color(0xFF31281B), RoundedCornerShape(10.dp)).padding(10.dp)) {
+        Text("OFFLINE DEMO • NOT CONTROLLER VALUES", color = amber, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text("All example values and ranges are illustrative. They are not validated ND72530 limits. Nothing here can change the controller.", color = Color.White, fontSize = 11.sp)
+    }
+    Spacer(Modifier.height(10.dp))
+    demoGroups.forEach { group ->
+        val isOpen = expanded[group.title] == true
+        Column(Modifier.fillMaxWidth().padding(bottom = 8.dp).background(Color(0xFF0D263D), RoundedCornerShape(12.dp))
+            .border(1.dp, Color(0xFF185278), RoundedCornerShape(12.dp))) {
+            Row(Modifier.fillMaxWidth().clickable { expanded[group.title] = !isOpen }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(group.title, color = electricBlue, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("${group.parameters.size}   ${if (isOpen) "▴" else "▾"}", color = Color.White, fontSize = 14.sp)
+            }
+            if (isOpen) {
+                group.parameters.forEach { param ->
+                    DemoParameterControl(param, staged[param.key] ?: param.initial, (staged[param.key] ?: param.initial) != baseline[param.key]) { staged[param.key] = it }
+                }
+            }
+        }
+    }
+    Column(Modifier.fillMaxWidth().background(Color(0xFF0D263D), RoundedCornerShape(12.dp)).padding(12.dp)) {
+        Text("SAFETY REVIEW", color = amber, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text("My Setup component ratings and controller parameter mapping are not validated. Safety recommendations and hardware writes remain unavailable.", color = Color.White, fontSize = 12.sp)
+        TextButton(onClick = { showInfo = true }) { Text("Why are writes disabled?") }
+    }
+    Spacer(Modifier.height(8.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.weight(1f)) { Text("READ") }
+        OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.weight(1f)) { Text("WRITE") }
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = { savedProfile = staged.toMap() }, modifier = Modifier.weight(1f)) { Text("SAVE DEMO") }
+        OutlinedButton(onClick = { savedProfile?.let { staged.putAll(it) } }, enabled = savedProfile != null, modifier = Modifier.weight(1f)) { Text("LOAD DEMO") }
+    }
+    Text("Save/Load is in-memory only and resets when the app closes.", color = Color(0xFFB9CBDB), fontSize = 11.sp)
+    TextButton(onClick = { baseline.forEach { (k, v) -> staged[k] = v } }) { Text("Discard staged demo changes") }
+    if (showInfo) AlertDialog(onDismissRequest = { showInfo = false }, title = { Text("Controller protection") },
+        text = { Text("Parameter addresses, units, safe limits, controller read-back, and My Setup component ratings must be verified before any hardware write operation is enabled.") },
+        confirmButton = { TextButton(onClick = { showInfo = false }) { Text("OK") } })
+}
+
+@Composable
+private fun DemoParameterControl(param: DemoParameter, value: Int, modified: Boolean, onChange: (Int) -> Unit) {
+    var editing by remember(param.key) { mutableStateOf(false) }
+    var draft by remember(param.key, editing) { mutableStateOf(value.toString()) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp)
+        .background(Color(0xFF15344C), RoundedCornerShape(9.dp)).padding(10.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(param.title, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            if (modified) Text("●", color = amber, fontSize = 12.sp)
+            Spacer(Modifier.width(6.dp))
+            if (editing) {
+                OutlinedTextField(value = draft, onValueChange = { text -> if (text.length <= 7 && text.all { it.isDigit() }) draft = text },
+                    modifier = Modifier.width(82.dp), singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp))
+                TextButton(onClick = { draft.toIntOrNull()?.let { onChange(it.coerceIn(param.min, param.max)) }; editing = false }) { Text("✓") }
+            } else {
+                TextButton(onClick = { editing = true }) {
+                    Text("$value ${param.unit} ✎", color = Color(0xFF8AD7FF), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = { onChange((value - param.step).coerceAtLeast(param.min)) },
+                modifier = Modifier.width(48.dp), contentPadding = PaddingValues(0.dp)) { Text("−") }
+            Slider(value = value.toFloat(), onValueChange = { onChange(it.toInt().coerceIn(param.min, param.max)) },
+                valueRange = param.min.toFloat()..param.max.toFloat(), modifier = Modifier.weight(1f).padding(horizontal = 5.dp))
+            OutlinedButton(onClick = { onChange((value + param.step).coerceAtMost(param.max)) },
+                modifier = Modifier.width(48.dp), contentPadding = PaddingValues(0.dp)) { Text("+") }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("${param.min} ${param.unit}", color = Color(0xFF9CBBD3), fontSize = 10.sp)
+            Text("Example range only", color = amber, fontSize = 10.sp)
+            Text("${param.max} ${param.unit}", color = Color(0xFF9CBBD3), fontSize = 10.sp)
         }
     }
 }
