@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import java.io.File
+import java.io.FileInputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -62,10 +64,26 @@ private data class Health(
     val connectedAt: Long = 0L, val lastPacketAt: Long = 0L,
     val notifications: Int = 0, val recentPackets: List<Long> = emptyList(),
     val lastHex: String = "No notifications", val event: String = "Ready",
-    val rawLogging: Boolean = false, val logCount: Int = 0
+    val rawLogging: Boolean = false, val logCount: Int = 0,
+    val validEnvelopeCount: Int = 0, val invalidEnvelopeCount: Int = 0,
+    val frameIds: Map<Int, Int> = emptyMap(),
+    val lastFrameKind: String = "No frame classified",
+    val disconnects: Int = 0, val reconnects: Int = 0,
+    val totalSessionStart: Long = 0L, val maxGapMs: Long = 0L,
+    val rawBytes: Long = 0L
 )
 private fun hex(bytes: ByteArray) = bytes.joinToString(" ") { "%02X".format(it.toInt() and 255) }
 private fun stamp() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+
+/** Structural envelope check only. CRC/checksum cannot be verified without a proven algorithm. */
+private data class FrameCheck(val envelopeOk: Boolean, val kind: String, val id: Int?)
+private fun inspectFrame(data: ByteArray): FrameCheck {
+    val marker = data.firstOrNull()?.toInt()?.and(255)
+    if (data.size != 16 || marker != 0xAA) return FrameCheck(false, "Unexpected envelope (${data.size} bytes; marker ${marker?.toString(16) ?: "none"})", null)
+    val id = data[1].toInt() and 255
+    return FrameCheck(true, "16-byte AA envelope • ID 0x%02X • CRC UNVERIFIED".format(id), id)
+}
+
 
 /** One-file v0.7 BLE client. Does not conflict with an existing BleManager.kt. Read-only. */
 @SuppressLint("MissingPermission")
@@ -121,6 +139,7 @@ private class DiagnosticBleClient(
         if (adapter == null || !adapter.isEnabled) { message("Enable Bluetooth"); return }
         val scanner = adapter.bluetoothLeScanner ?: run { message("BLE scanner unavailable"); return }
         manualStop = false
+        if (h.totalSessionStart == 0L) publish(h.copy(totalSessionStart = SystemClock.elapsedRealtime()))
         found.clear()
         try {
             scanning = true
@@ -181,7 +200,7 @@ private class DiagnosticBleClient(
             return
         }
         attempts++
-        state(LinkState.RECONNECTING, "Reconnect attempt $attempts of 2")
+        publish(h.copy(state = LinkState.RECONNECTING, reconnects = h.reconnects + 1, event = "Reconnect attempt $attempts of 2"))
         val task = Runnable { selected?.let { connect(it, h.name, h.rssi) } }
         retryTask = task
         handler.postDelayed(task, attempts * 2000L)
@@ -201,6 +220,7 @@ private class DiagnosticBleClient(
                     publish(h.copy(state = LinkState.CONNECTED, connectedAt = SystemClock.elapsedRealtime(), event = "GATT connected"))
                     try { g.discoverServices() } catch (e: Exception) { message("Service discovery error: ${e.message}") }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    publish(h.copy(disconnects = h.disconnects + 1))
                     try { g.close() } catch (_: Exception) { }
                     if (gatt === g) gatt = null
                     retry()
@@ -246,11 +266,19 @@ private class DiagnosticBleClient(
         handler.post {
             if (closed || data.isEmpty()) return@post
             val now = SystemClock.elapsedRealtime()
+            val check = inspectFrame(data)
+            val ids = h.frameIds.toMutableMap()
+            if (check.id != null) ids[check.id] = (ids[check.id] ?: 0) + 1
             val recent = (h.recentPackets + now).filter { now - it <= 5000L }.takeLast(200)
+            val gap = if (h.lastPacketAt > 0) now - h.lastPacketAt else 0L
             publish(h.copy(state = LinkState.RECEIVING, lastPacketAt = now, notifications = h.notifications + 1,
-                recentPackets = recent, lastHex = hex(data), event = "Receiving BLE notifications"))
+                recentPackets = recent, lastHex = hex(data), event = "Receiving BLE notifications",
+                validEnvelopeCount = h.validEnvelopeCount + if (check.envelopeOk) 1 else 0,
+                invalidEnvelopeCount = h.invalidEnvelopeCount + if (check.envelopeOk) 0 else 1,
+                frameIds = ids, lastFrameKind = check.kind,
+                maxGapMs = maxOf(h.maxGapMs, gap), rawBytes = h.rawBytes + data.size))
             if (h.rawLogging) {
-                logBuffer.add("${stamp()},${data.size},${hex(data).replace(" ", "")}")
+                logBuffer.add("${stamp()},${data.size},${check.id?.let { "%02X".format(it) } ?: ""},${check.envelopeOk},UNVERIFIED,${hex(data).replace(" ", "")}")
                 if (logBuffer.size >= 25 || now - lastFlush > 2000L) flush()
                 publish(h.copy(logCount = h.logCount + 1))
             }
@@ -270,7 +298,7 @@ private class DiagnosticBleClient(
             try {
                 val dir = File(activity.filesDir, "ble_logs").apply { mkdirs() }
                 logFile = File(dir, "ble_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.csv")
-                logFile!!.writeText("timestamp,bytes,hex\n")
+                logFile!!.writeText("timestamp,bytes,frame_id,envelope_ok,crc_status,hex\n")
                 logBuffer.clear(); lastFlush = SystemClock.elapsedRealtime()
                 publish(h.copy(rawLogging = true, logCount = 0, event = "Recording raw BLE frames"))
             } catch (e: Exception) { message("Unable to start logging: ${e.message}") }
@@ -282,6 +310,16 @@ private class DiagnosticBleClient(
         catch (e: Exception) { publish(h.copy(rawLogging = false, event = "Log write error: ${e.message}")) }
     }
     fun logLocation() = logFile?.absolutePath ?: "No log created"
+    fun exportCsv(destination: Uri): Boolean {
+        flush()
+        val source = logFile ?: return false
+        return try {
+            activity.contentResolver.openOutputStream(destination)?.use { out ->
+                FileInputStream(source).use { input -> input.copyTo(out) }
+            } != null
+        } catch (e: Exception) { message("Export failed: ${e.message}"); false }
+    }
+    fun suggestedFileName() = logFile?.name ?: "fardriver_ble_log.csv"
     fun close() {
         if (closed) return
         manualStop = true
@@ -330,6 +368,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             var health by remember { mutableStateOf(Health()) }
             var setup by remember { mutableStateOf(loadSetup(this@MainActivity)) }
+            var exportMessage by remember { mutableStateOf("") }
+            val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+                exportMessage = if (uri != null && client?.exportCsv(uri) == true) "CSV exported successfully" else "Export cancelled or failed"
+            }
             val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
                 if (permissions.values.all { it }) client?.scan()
                 else health = health.copy(event = "Bluetooth permissions denied")
@@ -346,7 +388,8 @@ class MainActivity : ComponentActivity() {
             var clock by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
             LaunchedEffect(Unit) { while (true) { delay(1000); client?.tick(); clock = SystemClock.elapsedRealtime() } }
             AppContent(health, clock, setup, { setup = it; storeSetup(this@MainActivity, it) }, scan,
-                { client?.toggleLogging() }, { client?.logLocation() ?: "No log created" })
+                { client?.toggleLogging() }, { client?.logLocation() ?: "No log created" },
+                { exportLauncher.launch(client?.suggestedFileName() ?: "fardriver_ble_log.csv") }, exportMessage)
         }
     }
     override fun onDestroy() { client?.close(); super.onDestroy() }
@@ -354,7 +397,8 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun AppContent(health: Health, clock: Long, setup: Setup, saveSetup: (Setup) -> Unit,
-                       scan: () -> Unit, toggleLog: () -> Unit, logPath: () -> String) {
+                       scan: () -> Unit, toggleLog: () -> Unit, logPath: () -> String,
+                       export: () -> Unit, exportMessage: String) {
     var page by remember { mutableStateOf("Ride") }
     var menuOpen by remember { mutableStateOf(false) }
     var issue by remember { mutableStateOf<Issue?>(null) }
@@ -391,7 +435,7 @@ private fun AppContent(health: Health, clock: Long, setup: Setup, saveSetup: (Se
                     when (page) {
                         "Ride" -> RideScreen()
                         "Tuning" -> TuningScreen(setup, { issue = it }, { page = "My Setup" })
-                        "Diagnostics" -> DiagnosticsScreen(health, clock, scan, toggleLog, logPath, setup, { issue = it })
+                        "Diagnostics" -> DiagnosticsScreen(health, clock, scan, toggleLog, logPath, export, exportMessage, setup, { issue = it })
                         else -> SetupScreen(setup, saveSetup)
                     }
                 } }
@@ -600,7 +644,8 @@ private val demoGroups = listOf(
     Text("Demo profiles reset on app restart. No hardware commands are sent.", color = pale, fontSize = 11.sp)
 }
 
-@Composable private fun DiagnosticsScreen(h: Health, clock: Long, scan: () -> Unit, toggleLog: () -> Unit, logPath: () -> String, setup: Setup, showIssue: (Issue) -> Unit) {
+@Composable private fun DiagnosticsScreen(h: Health, clock: Long, scan: () -> Unit, toggleLog: () -> Unit, logPath: () -> String,
+    export: () -> Unit, exportMessage: String, setup: Setup, showIssue: (Issue) -> Unit) {
     val now = clock
     val age = if (h.lastPacketAt > 0) (now - h.lastPacketAt).coerceAtLeast(0L) / 1000.0 else null
     val duration = if (h.connectedAt > 0) (now - h.connectedAt).coerceAtLeast(0L) / 1000L else 0L
@@ -620,15 +665,29 @@ private val demoGroups = listOf(
         Text("Captures timestamped BLE notifications, not validated telemetry frames.", fontSize = 12.sp)
         Button(onClick = toggleLog) { Text(if (h.rawLogging) "Stop & Save Log" else "Start Raw Logging") }
         Text("Logged notifications: ${h.logCount}\nFile: ${logPath()}", fontSize = 11.sp)
-        Text("Saved privately in app storage. CSV export/share is not yet implemented.", color = amber, fontSize = 11.sp)
+        OutlinedButton(onClick = export, enabled = logPath() != "No log created") { Text("EXPORT CSV") }
+        Text(exportMessage, color = green, fontSize = 11.sp)
+        Text("Choose a location using Android's Save dialog; share the resulting CSV from Files.", color = pale, fontSize = 11.sp)
     }
     Panel("ERROR / FAULT HISTORY") { Text("Fault decoder not validated. No fault-free claim can be made.", fontSize = 12.sp) }
     Panel("POTENTIAL SAFETY CONCERNS") {
         safetyIssues(setup).forEach { item -> Text("⚠ ${item.title} ›", color = amber, modifier = Modifier.fillMaxWidth().clickable { showIssue(item) }.padding(vertical = 8.dp), fontSize = 12.sp) }
     }
-    Panel("TELEMETRY") {
-        Text("Raw BLE data received: ${h.notifications} notifications", color = pale)
-        Text("Controller voltage, current, RPM and temperatures remain unavailable until the frame parser and CRC/checksum are validated.", color = amber, fontSize = 12.sp)
+    Panel("FRAME VALIDATION & LIVE RAW TELEMETRY") {
+        Text("16-byte AA envelopes: ${h.validEnvelopeCount}", color = green, fontSize = 12.sp)
+        Text("Other notifications: ${h.invalidEnvelopeCount}", color = pale, fontSize = 12.sp)
+        Text("Last frame: ${h.lastFrameKind}", color = pale, fontSize = 12.sp)
+        Text("CRC / checksum: NOT VERIFIED", color = amber, fontSize = 12.sp)
+        Text("Observed message IDs: " + h.frameIds.entries.sortedByDescending { it.value }.take(8).joinToString { "0x%02X (%d)".format(it.key, it.value) }.ifEmpty { "None" }, fontSize = 11.sp)
+        Text("Live raw throughput: ${h.rawBytes} bytes received", fontSize = 11.sp)
+        Text("Voltage, current, RPM and temperatures: unavailable until the actual controller field mapping and integrity algorithm are verified. No simulated values are shown.", color = amber, fontSize = 12.sp)
+    }
+    Panel("CONNECTION SOAK TEST") {
+        val total = if (h.totalSessionStart > 0) (clock - h.totalSessionStart).coerceAtLeast(0L) / 1000L else 0L
+        Text("Test elapsed: ${total / 60}m ${total % 60}s", fontSize = 12.sp)
+        Text("Disconnects: ${h.disconnects}   Reconnect attempts: ${h.reconnects}", fontSize = 12.sp)
+        Text("Longest notification gap: ${h.maxGapMs} ms", fontSize = 12.sp)
+        Text("Keep stationary and monitor for 10–30 minutes; this records connection behavior, not vehicle safety.", color = pale, fontSize = 11.sp)
     }
     Panel("BEFORE / AFTER COMPARISON") { Text("Requires validated measurements and saved ride sessions.", fontSize = 12.sp) }
 }
